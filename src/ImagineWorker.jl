@@ -1,0 +1,5 @@
+module ImagineWorker
+
+# package code goes here
+
+end # module
