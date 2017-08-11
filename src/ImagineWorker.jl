@@ -1,5 +1,17 @@
+__precompile__(true)
+
 module ImagineWorker
 
-# package code goes here
+using ImagineInterface, Unitful
+using NIDAQ
 
-end # module
+global DEVICE_PREFIX = ""        
+
+export _set_device
+
+_set_device{T<:AbstractString}(dev::T) = global DEVICE_PREFIX = String(dev)
+
+include("inputs.jl")
+include("outputs.jl")
+
+end #module
