@@ -134,7 +134,8 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
         rethrow()
     end
     #print("Waiting for AO task to complete\n")
-    NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, 2.0))
+    time_to_wait = 1.0*Unitful.s + 2*samps_per_write / samprate(coms[1])
+    NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, ustrip(time_to_wait)))
     stop(tsk)
     clear(tsk)
     return ImagineSignal[]
