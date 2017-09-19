@@ -34,7 +34,7 @@ end
 write_digital(t::NIDAQ.DOTask, data::Vector{UInt8}; timeout::Float64=-1.0) = write_digital(t, reshape(data,(length(data),1)), timeout=timeout)
 
 #returns a DAQ task handle
-function prepare_ao(coms, bufsz::Int, trigger_terminal::String)
+function prepare_ao(coms, bufsz::Int, trigger_terminal::String, clock_source)
     print("preparing DAQ for ao...\n")
     chns = map(daq_channel, coms)
     nsamps = length(first(coms))
@@ -59,15 +59,24 @@ function prepare_ao(coms, bufsz::Int, trigger_terminal::String)
             NIDAQ.catch_error(NIDAQ.SetAOUsbXferReqSize(tsk.th, Vector{UInt8}(DEVICE_PREFIX * chns[i]), usb_req_size[]))
         end
     end
+    #creating clk_b this way works around a bizarre bug that prevents precompilatoin when converting clock_source with other methods
+    clk_b = UInt8[]
+    if clock_source[1:2] == "ao"
+        clk_b = b"OnboardClock"
+    else
+        for ch in clock_source
+            push!(clk_b, ch)
+        end
+    end
     NIDAQ.catch_error(NIDAQ.CfgSampClkTiming(tsk.th,
-            convert(Ref{UInt8},b""),
+            convert(Ref{UInt8}, clk_b),
             Float64(ustrip(samprate(first(coms)))),
             NIDAQ.Val_Rising,
             NIDAQ.Val_FiniteSamps,
             UInt64(nsamps)))
     disallow_regen = Int32(10158) #default is allow regen (10097).  We want to disallow it (10158)
     NIDAQ.catch_error(NIDAQ.DAQmxSetWriteRegenMode(tsk.th, disallow_regen))
-    #print("AO buffer size (nsamps): $bufsz\n")
+    print("AO buffer size (nsamps): $bufsz\n")
     NIDAQ.catch_error(NIDAQ.DAQmxCfgOutputBuffer(tsk.th, UInt32(bufsz)))
     if trigger_terminal != "disabled"
         print("    setting up digital start trigger for analog output...\n")
@@ -85,18 +94,18 @@ function prepare_ao(coms, bufsz::Int, trigger_terminal::String)
     return tsk
 end
 
-function prepare_do(coms, bufsz::Int, trigger_terminal::String)
+function prepare_do(coms, bufsz::Int, trigger_terminal::String; clock_source = clock)
     error("Not yet implemented")
 end
 
-function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, ready_chan::RemoteChannel)
+function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock)
     if length(finddigital(coms)) != 0
         error("Please provide only analog ImagineSignals")
     end
     if !all(map(isoutput, coms))
         error("Please provide only output ImagineSignals")
     end
-    tsk = prepare_ao(coms, 2*samps_per_write, trigger_terminal)
+    tsk = prepare_ao(coms, 2*samps_per_write, trigger_terminal, clock)
     nchans = length(coms)
     finished = false
     curstart = 1
@@ -117,7 +126,7 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
             end
             #now write to daq buffer
             if wrote_once
-                write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0)
+                @time write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0)
             else
                 write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0, wait_for_space = false)
             end
@@ -133,22 +142,23 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
         clear(tsk)
         rethrow()
     end
-    #print("Waiting for AO task to complete\n")
+    print("Waiting for AO task to complete\n")
     time_to_wait = 1.0*Unitful.s + 2*samps_per_write / samprate(coms[1])
     NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, ustrip(time_to_wait)))
     stop(tsk)
     clear(tsk)
+    print("Finished.\n")
     return ImagineSignal[]
 end
 
-function _output_digital_signals{T>:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String)
+function _output_digital_signals{T>:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, clock::AbstractString)
     if length(findanalog(coms)) != 0
         error("Please provide only digital ImagineSignals")
     end
     if !all(map(isoutput, coms))
         error("Please provide only output ImagineSignals")
     end
-    tsk = prepare_ao(coms, 2*samps_per_write, trigger_terminal)
+    tsk = prepare_do(coms, 2*samps_per_write, trigger_terminal; clock_source = clock)
     nchans = length(coms)
     finished = false
     curstart = 1

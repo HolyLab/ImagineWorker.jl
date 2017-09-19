@@ -53,14 +53,13 @@ function read_digital(t::NIDAQ.DITask, precision::DataType, num_samples_per_chan
     return data
 end 
 
-function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; terminal_config = "referenced single-ended")
+function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; terminal_config = "referenced single-ended", clock_source::AbstractString = "")
     print("preparing DAQ for ai...\n")
     rig = rig_name(coms[1])
     usb_req_size = Ref{UInt32}(0)
     chns = map(daq_channel, coms)
     nchans = length(coms)
     tsk = []
-    DEVICE_PREFIX = "Dev2/"
     if !in(split(DEVICE_PREFIX, "/")[1], NIDAQ.devices())
         print("trying to throw error\n") #this error isn't visible.  TODO:fix
         error("Device $DEVICE_PREFIX not detected")
@@ -91,8 +90,16 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
             NIDAQ.catch_error(NIDAQ.SetAIDataXferMech(tsk.th, convert(Ref{UInt8}, Vector{UInt8}(DEVICE_PREFIX * chns[i])), Int32(NIDAQ.DAQmx_Val_DMA)))
         end
     end
+    clk_b = UInt8[]
+    if clock_source[1:2] == "ai"
+        clk_b = b"OnboardClock"
+    else
+        for ch in clock_source
+            push!(clk_b, ch)
+        end
+    end
     NIDAQ.catch_error(NIDAQ.CfgSampClkTiming(tsk.th,
-            convert(Ref{UInt8},b""),
+            convert(Ref{UInt8}, clk_b),
             Float64(ustrip(samprate(first(coms)))),
             NIDAQ.Val_Rising,
             NIDAQ.Val_FiniteSamps,
@@ -112,11 +119,11 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
     return tsk
 end
 
-function prepare_di(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String)
+function prepare_di(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; clock_source = "")
     error("Not yet implemented")
 end
 
-function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel)
+function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock::AbstractString)
     if any(map(isdigital, coms))
         error("Only analog signals are allowed")
     end
@@ -127,7 +134,7 @@ function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms:
     else
         autostart = true
     end
-    tsk = prepare_ai(coms, nsamps, 2*samps_per_read, trigger_terminal)
+    tsk = prepare_ai(coms, nsamps, 2*samps_per_read, trigger_terminal, clock_source=clock)
     output_array = -1
     fid = -1
     if !isempty(ai_name)
@@ -145,7 +152,7 @@ function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms:
     return sigs
 end
 
-function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String)
+function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, clock::AbstractString)
     if !all(map(isdigital, coms))
         error("Only digital signals are allowed")
     end
@@ -166,7 +173,6 @@ end
 
 #Should work for both analog and digital
 function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.SampleMapper{Traw, TV, TW}, tsk, nsamps::Integer, samps_per_read::Integer, autostart::Bool, ready_chan::RemoteChannel)
-    print("Begin record loop\n")
     nsamps = size(output,2)
     nchans = size(output,1)
     finished = false
@@ -176,7 +182,7 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
     if is_digi
         pp = x->Traw(x)
     else #it's an analog voltage
-        #TODO: remove max() after debugging
+        #TODO: remove max() after handling piezo signal issue
         pp = x-> ImagineInterface.volts2raw(m)(max(0.0, x)*Unitful.V)
     end
     try
@@ -199,7 +205,9 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
             nsamps_to_read = curstop - curstart + 1
             #now read from buffer
             if !is_digi
-                @time output[:, curstart:curstop] = map(pp, read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0));
+                @time cur_samps = view(read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0), 1:nsamps_to_read); #takes almost all the time
+                cur_samps = map(pp, cur_samps);
+                output[:, curstart:curstop] = cur_samps;
             else
                 output[:, curstart:curstop] = map(pp, read_digital!(sampbuf, tsk, UInt8, nsamps_to_read, timeout=-1.0))
             end
@@ -215,5 +223,6 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
     NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, 0.0)) #should be done already, throw error if not
     stop(tsk)
     clear(tsk)
+    print("Finished.\n")
     return true
 end
