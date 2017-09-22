@@ -1,11 +1,21 @@
+function read_analog(t::NIDAQ.AITask, precision::DataType, num_samples_per_chan::Integer = -1; timeout::Float64=-1.0)
+    data = allocate_sampbuf(t, precision, num_samples_per_chan)
+    read_analog!(data, t, precision, num_samples_per_chan; timeout = timeout)
+end
+
+function allocate_sampbuf(t::NIDAQ.AITask, precision::DataType, num_samples_per_chan::Integer = -1)
+    num_channels = getproperties(t)["NumChans"][1]
+    buffer_size = num_samples_per_chan==-1 ? 1024 : num_samples_per_chan
+    return Array{precision}(buffer_size*num_channels)
+end
+
 #modified from NIDAQ.read
 #idea:  could modify this to be mutating (!) function that writes to a view of a bigger array.
 #       but warning! the input data vector must be the correct size and contiguous in memory
-function read_analog(t::NIDAQ.AITask, precision::DataType, num_samples_per_chan::Integer = -1; timeout::Float64=-1.0)
+function read_analog!(data, t::NIDAQ.AITask, precision::DataType, num_samples_per_chan::Integer = -1; timeout::Float64=-1.0)
     num_channels = getproperties(t)["NumChans"][1]
     num_samples_per_chan_read = Int32[0]
     buffer_size = num_samples_per_chan==-1 ? 1024 : num_samples_per_chan
-    data = Array{precision}(buffer_size*num_channels)
     NIDAQ.catch_error( NIDAQ.read_analog_cfunctions[precision](t.th,
                                                         convert(Int32,num_samples_per_chan),
                                                         timeout,
@@ -43,7 +53,7 @@ function read_digital(t::NIDAQ.DITask, precision::DataType, num_samples_per_chan
     return data
 end 
 
-function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; terminal_config = "referenced single-ended")
+function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; terminal_config = "referenced single-ended", clock_source::AbstractString = "")
     print("preparing DAQ for ai...\n")
     rig = rig_name(coms[1])
     usb_req_size = Ref{UInt32}(0)
@@ -51,11 +61,15 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
     nchans = length(coms)
     tsk = []
     if !in(split(DEVICE_PREFIX, "/")[1], NIDAQ.devices())
+        print("trying to throw error\n") #this error isn't visible.  TODO:fix
         error("Device $DEVICE_PREFIX not detected")
     end
-    for i = 1:length(chns)
+    for i = 1:nchans
         if i == 1
             tsk = analog_input(DEVICE_PREFIX * chns[1], terminal_config = terminal_config)
+            if nchans == 1
+                setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
+            end
         else
             analog_input(tsk, DEVICE_PREFIX * chns[i])
             setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
@@ -66,19 +80,32 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
         NIDAQ.catch_error(NIDAQ.GetAIUsbXferReqSize(tsk.th, Vector{UInt8}(DEVICE_PREFIX * chns[1]), usb_req_size))
         #See article here http://digital.ni.com/public.nsf/allkb/B7B47F50F9813DFD862575890054EF7C
         usb_req_size = Ref{UInt32}(usb_req_size[] * UInt32(2))
-        for i = 1:length(chns)
+        for i = 1:nchans
             print("    Set Usb transfer request size for AI\n")            
             NIDAQ.catch_error(NIDAQ.SetAIUsbXferReqSize(tsk.th, Vector{UInt8}(DEVICE_PREFIX * chns[i]), usb_req_size[]))
         end
+    else
+        print("Setting DMA Xfer for AI\n")
+        for i = 1:nchans
+            NIDAQ.catch_error(NIDAQ.SetAIDataXferMech(tsk.th, convert(Ref{UInt8}, Vector{UInt8}(DEVICE_PREFIX * chns[i])), Int32(NIDAQ.DAQmx_Val_DMA)))
+        end
+    end
+    clk_b = UInt8[]
+    if clock_source[1:2] == "ai"
+        clk_b = b"OnboardClock"
+    else
+        for ch in clock_source
+            push!(clk_b, ch)
+        end
     end
     NIDAQ.catch_error(NIDAQ.CfgSampClkTiming(tsk.th,
-            convert(Ref{UInt8},b""),
+            convert(Ref{UInt8}, clk_b),
             Float64(ustrip(samprate(first(coms)))),
             NIDAQ.Val_Rising,
             NIDAQ.Val_FiniteSamps,
             UInt64(nsamps)))
     NIDAQ.catch_error(NIDAQ.DAQmxCfgInputBuffer(tsk.th, UInt32(bufsz)))
-    #print("AI buffer size (nsamps): $bufsz\n")
+    print("AI buffer size (nsamps): $bufsz\n")
     if trigger_terminal != "disabled"
         print("    setting up digital start trigger for analog recording...\n")
         props = NIDAQ.getproperties(String(split(DEVICE_PREFIX, "/")[1]))
@@ -92,18 +119,22 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
     return tsk
 end
 
-function prepare_di(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String)
+function prepare_di(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String; clock_source = "")
     error("Not yet implemented")
 end
 
-function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel)
+function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock::AbstractString)
     if any(map(isdigital, coms))
         error("Only analog signals are allowed")
     end
     nchans = length(coms)
-    #Differently from analog outputs, analog inputs should only be started via software if they don't use a trigger (strange design)
-    autostart = trigger_terminal == "disabled" ? true : false
-    tsk = prepare_ai(coms, nsamps, 2*samps_per_read, trigger_terminal)
+    #device quirk?
+    if rig_name(coms[1]) == "dummy-6002"
+        autostart = trigger_terminal == "disabled" ? true : false
+    else
+        autostart = true
+    end
+    tsk = prepare_ai(coms, nsamps, 2*samps_per_read, trigger_terminal, clock_source=clock)
     output_array = -1
     fid = -1
     if !isempty(ai_name)
@@ -121,7 +152,7 @@ function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms:
     return sigs
 end
 
-function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String)
+function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, clock::AbstractString)
     if !all(map(isdigital, coms))
         error("Only digital signals are allowed")
     end
@@ -151,11 +182,18 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
     if is_digi
         pp = x->Traw(x)
     else #it's an analog voltage
-        pp = x-> ImagineInterface.volts2raw(m)(x*Unitful.V)
+        #TODO: remove max() after handling piezo signal issue
+        pp = x-> ImagineInterface.volts2raw(m)(max(0.0, x)*Unitful.V)
     end
     try
         if autostart
             start(tsk)
+        end
+        sampbuf = -1
+        if !is_digi
+            sampbuf = allocate_sampbuf(tsk, Float64, samps_per_read)
+        else
+            sampbuf = allocate_sampbuf(tsk, UInt8, samps_per_read)
         end
         put!(ready_chan, myid())
         while !finished
@@ -167,20 +205,24 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
             nsamps_to_read = curstop - curstart + 1
             #now read from buffer
             if !is_digi
-                output[:, curstart:curstop] = map(pp, read_analog(tsk, Float64, nsamps_to_read, timeout=-1.0))
+                @time cur_samps = view(read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0), 1:nsamps_to_read); #takes almost all the time
+                cur_samps = map(pp, cur_samps);
+                output[:, curstart:curstop] = cur_samps;
             else
-                output[:, curstart:curstop] = map(pp, read_digital(tsk, UInt8, nsamps_to_read, timeout=-1.0))
+                output[:, curstart:curstop] = map(pp, read_digital!(sampbuf, tsk, UInt8, nsamps_to_read, timeout=-1.0))
             end
             print("So far $curstop of $nsamps samples have been read...\n")
             curstart = curstop + 1
         end
     catch
+        print("some error\n")
         clear(tsk)
         rethrow()
     end
-    #print("waiting until task is done...\n")
+    print("waiting until task is done...\n")
     NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, 0.0)) #should be done already, throw error if not
     stop(tsk)
     clear(tsk)
+    print("Finished.\n")
     return true
 end
