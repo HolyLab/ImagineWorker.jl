@@ -122,7 +122,7 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
             end
             nsamps_to_write = curstop - curstart + 1
             for i = 1:nchans
-                write_buffer[1:nsamps_to_write, i] = ustrip(get_samples(coms[i], curstart, curstop; sampmap = :volts))
+                write_buffer[1:nsamps_to_write, i] = ustrip.(get_samples(coms[i], curstart, curstop; sampmap = :volts))
             end
             #now write to daq buffer
             if wrote_once
@@ -175,7 +175,7 @@ function _output_digital_signals{T>:ImagineSignal}(coms::AbstractVector{T}, samp
             end
             nsamps_to_write = curstop - curstart + 1
             for i = 1:nchans
-                write_buffer[1:nsamps_to_write, i] = ustrip(get_samples(coms[i], curstart, curstop; sampmap = :volts))
+                write_buffer[1:nsamps_to_write, i] = ustrip.(get_samples(coms[i], curstart, curstop; sampmap = :volts))
             end
             #now write to daq buffer
             if wrote_once
