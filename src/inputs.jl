@@ -183,7 +183,11 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
         pp = x->Traw(x)
     else #it's an analog voltage
         #TODO: remove max() after handling piezo signal issue
-        pp = x-> ImagineInterface.volts2raw(m)(max(0.0, x)*Unitful.V)
+        pp = x-> try
+                    ImagineInterface.volts2raw(m)(max(0.0, x)*Unitful.V)
+                catch
+                    print("error with this sample value: $x \n")
+                end
     end
     try
         if autostart
