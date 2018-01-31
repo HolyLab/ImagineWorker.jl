@@ -126,7 +126,7 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
             end
             #now write to daq buffer
             if wrote_once
-                @time write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0)
+                write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0)
             else
                 write_analog(tsk, write_buffer[1:nsamps_to_write,:], timeout=-1.0, wait_for_space = false)
             end

@@ -205,7 +205,7 @@ function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.Sa
             nsamps_to_read = curstop - curstart + 1
             #now read from buffer
             if !is_digi
-                @time cur_samps = view(read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0), 1:nsamps_to_read); #takes almost all the time
+                cur_samps = view(read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0), 1:nsamps_to_read); #takes almost all the time
                 cur_samps = map(pp, cur_samps);
                 output[:, curstart:curstop] = cur_samps;
             else
