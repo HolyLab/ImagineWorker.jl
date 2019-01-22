@@ -10,7 +10,7 @@ if is_windows() && isfile("C:\\Windows\\System32\\nicaiu.dll")
 
     export _set_device
 
-    _set_device{T<:AbstractString}(dev::T) = global DEVICE_PREFIX = String(dev)
+    _set_device(dev::T) where {T<:AbstractString} = global DEVICE_PREFIX = String(dev)
 
     include("inputs.jl")
     include("outputs.jl")

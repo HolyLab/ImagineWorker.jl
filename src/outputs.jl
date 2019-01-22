@@ -98,7 +98,7 @@ function prepare_do(coms, bufsz::Int, trigger_terminal::String; clock_source = c
     error("Not yet implemented")
 end
 
-function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock)
+function _output_analog_signals(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock) where T<:ImagineSignal
     if length(finddigital(coms)) != 0
         error("Please provide only analog ImagineSignals")
     end
@@ -151,7 +151,7 @@ function _output_analog_signals{T<:ImagineSignal}(coms::AbstractVector{T}, samps
     return ImagineSignal[]
 end
 
-function _output_digital_signals{T>:ImagineSignal}(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, clock::AbstractString)
+function _output_digital_signals(coms::AbstractVector{T}, samps_per_write::Int, trigger_terminal::String, clock::AbstractString) where T>:ImagineSignal
     if length(findanalog(coms)) != 0
         error("Please provide only digital ImagineSignals")
     end

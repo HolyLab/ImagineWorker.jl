@@ -123,7 +123,7 @@ function prepare_di(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
     error("Not yet implemented")
 end
 
-function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock::AbstractString)
+function _record_analog_signals(ai_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, ready_chan::RemoteChannel, clock::AbstractString) where T<:ImagineSignal
     if any(map(isdigital, coms))
         error("Only analog signals are allowed")
     end
@@ -152,7 +152,7 @@ function _record_analog_signals{T<:ImagineSignal}(ai_name::AbstractString, coms:
     return sigs
 end
 
-function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, clock::AbstractString)
+function _record_digital_signals(di_name::AbstractString, coms::AbstractVector{T}, nsamps::Integer, samps_per_read::Int, trigger_terminal::String, clock::AbstractString) where T<:ImagineSignal
     if !all(map(isdigital, coms))
         error("Only digital signals are allowed")
     end
@@ -172,7 +172,7 @@ function _record_digital_signals{T<:ImagineSignal}(di_name::AbstractString, coms
 end
 
 #Should work for both analog and digital
-function record_loop!{Traw, TV, TW}(output::Matrix{Traw}, m::ImagineInterface.SampleMapper{Traw, TV, TW}, tsk, nsamps::Integer, samps_per_read::Integer, autostart::Bool, ready_chan::RemoteChannel)
+function record_loop!(output::Matrix{Traw}, m::ImagineInterface.SampleMapper{Traw, TV, TW}, tsk, nsamps::Integer, samps_per_read::Integer, autostart::Bool, ready_chan::RemoteChannel) where {Traw, TV, TW}
     nsamps = size(output,2)
     nchans = size(output,1)
     finished = false
