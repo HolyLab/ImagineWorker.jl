@@ -6,7 +6,7 @@ end
 function allocate_sampbuf(t::NIDAQ.AITask, precision::DataType, num_samples_per_chan::Integer = -1)
     num_channels = getproperties(t)["NumChans"][1]
     buffer_size = num_samples_per_chan==-1 ? 1024 : num_samples_per_chan
-    return Array{precision}(buffer_size*num_channels)
+    return Array{precision}(undef, num_channels, buffer_size)
 end
 
 #modified from NIDAQ.read
@@ -20,9 +20,9 @@ function read_analog!(data, t::NIDAQ.AITask, precision::DataType, num_samples_pe
                                                         convert(Int32,num_samples_per_chan),
                                                         timeout,
                                                         reinterpret(Bool32,NIDAQ.Val_GroupByScanNumber),
-                                                        pointer(data),
+                                                        Ref(data,1),
                                                         convert(UInt32,buffer_size*num_channels),
-                                                        pointer(num_samples_per_chan_read),
+                                                        Ref(num_samples_per_chan_read,1),
                                                         reinterpret(Ptr{Bool32},C_NULL)) )
     if num_samples_per_chan_read[1] != num_samples_per_chan
         error("Read $num_samples_per_chan_read samples instead of the $num_samples_per_chan samples requested")
@@ -41,9 +41,9 @@ function read_digital(t::NIDAQ.DITask, precision::DataType, num_samples_per_chan
         convert(Int32,num_samples_per_chan),
         timeout,
         reinterpret(Bool32,NIDAQ.Val_GroupByScanNumber),
-        pointer(data),
+        Ref(data, 1),
         convert(UInt32,buffer_size*num_channels),
-        pointer(num_samples_per_chan_read),
+        Ref(num_samples_per_chan_read, 1),
         reinterpret(Ptr{Bool32},C_NULL)) )
     if num_samples_per_chan_read[1] != num_samples_per_chan
         error("Read $num_samples_per_chan_read samples instead of the $num_samples_per_chan samples requested")
@@ -68,11 +68,11 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
         if i == 1
             tsk = analog_input(DEVICE_PREFIX * chns[1], terminal_config = terminal_config)
             if nchans == 1
-                setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
+                NIDAQ.setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
             end
         else
             analog_input(tsk, DEVICE_PREFIX * chns[i])
-            setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
+            NIDAQ.setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
         end
     end
     if rig == "dummy-6002"
@@ -91,15 +91,18 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
         end
     end
     clk_b = UInt8[]
-    if clock_source[1:2] == "ai"
-        clk_b = b"OnboardClock"
+    if isempty(clock_source)
+        clk_b = C_NULL
+    elseif clock_source[1:2] == "ai"
+        clk_b = convert(Ref{UInt8}, b"OnboardClock")
     else
         for ch in clock_source
             push!(clk_b, ch)
         end
+        clk_b = convert(Ref{UInt8}, clk_b)
     end
     NIDAQ.catch_error(NIDAQ.CfgSampClkTiming(tsk.th,
-            convert(Ref{UInt8}, clk_b),
+            clk_b,
             Float64(ustrip(samprate(first(coms)))),
             NIDAQ.Val_Rising,
             NIDAQ.Val_FiniteSamps,
@@ -108,13 +111,13 @@ function prepare_ai(coms, nsamps::Integer, bufsz::Int, trigger_terminal::String;
     print("AI buffer size (nsamps): $bufsz\n")
     if trigger_terminal != "disabled"
         print("    setting up digital start trigger for analog recording...\n")
-        props = NIDAQ.getproperties(String(split(DEVICE_PREFIX, "/")[1]))
+        props = NIDAQ.getproperties(String(split(DEVICE_PREFIX, "/")[1])) #; warning=true)
         terms = props["Terminals"][1]
         if !in("/" * DEVICE_PREFIX * trigger_terminal, terms)
             error("Terminal $trigger_terminal is does not exist.  Check valid t erminals with NIDAQ.getproperties(dev)[\"Terminals\"]")
         end
         NIDAQ.catch_error(NIDAQ.DAQmxSetStartTrigType(tsk.th, NIDAQ.Val_DigEdge))
-        NIDAQ.catch_error(NIDAQ.CfgDigEdgeStartTrig(tsk.th, convert(Ref{UInt8}, convert(Array{UInt8}, "/" * DEVICE_PREFIX * trigger_terminal)), NIDAQ.Val_Rising))
+        NIDAQ.catch_error(NIDAQ.CfgDigEdgeStartTrig(tsk.th, Ref(codeunits("/" * DEVICE_PREFIX * trigger_terminal),1), NIDAQ.Val_Rising))
     end
     return tsk
 end
@@ -129,10 +132,10 @@ function _record_analog_signals(ai_name::AbstractString, coms::AbstractVector{T}
     end
     nchans = length(coms)
     #device quirk?
-    if rig_name(coms[1]) == "dummy-6002"
-        autostart = trigger_terminal == "disabled" ? true : false
+    if isequal(rig_name(coms[1]), "dummy-6002")
+        global autostart = isequal(trigger_terminal, "disabled") ? true : false
     else
-        autostart = true
+        global autostart = true
     end
     tsk = prepare_ai(coms, nsamps, 2*samps_per_read, trigger_terminal, clock_source=clock)
     output_array = -1
@@ -145,7 +148,7 @@ function _record_analog_signals(ai_name::AbstractString, coms::AbstractVector{T}
             output_array = Mmap.mmap(fid, Matrix{rawtype(first(coms))}, (nchans, nsamps))
         end
     else
-        output_array = Matrix{rawtype(first(coms))}(nchans, nsamps)
+        output_array = Matrix{rawtype(first(coms))}(undef, nchans, nsamps)
     end
     record_loop!(output_array, mapper(first(coms)), tsk, nsamps, samps_per_read, autostart, ready_chan)
     sigs = parse_ai(output_array, map(daq_channel, coms), rig_name(first(coms)), samprate(first(coms)))
@@ -157,7 +160,7 @@ function _record_digital_signals(di_name::AbstractString, coms::AbstractVector{T
         error("Only digital signals are allowed")
     end
     nchans = length(coms)
-    autostart = trigger_terminal == "disabled" ? true : false
+    autostart = isequal(trigger_terminal, "disabled") ? true : false
     tsk = prepare_di(coms, nsamps, 2*samps_per_read, trigger_terminal)
     fid = open(di_name, "w+")
     output_array = Mmap.mmap(fid, BitArray, (nchans, nsamps))
@@ -191,6 +194,7 @@ function record_loop!(output::Matrix{Traw}, m::ImagineInterface.SampleMapper{Tra
     end
     try
         if autostart
+	    print("Auto-starting task\n")
             start(tsk)
         end
         sampbuf = -1
@@ -209,11 +213,11 @@ function record_loop!(output::Matrix{Traw}, m::ImagineInterface.SampleMapper{Tra
             nsamps_to_read = curstop - curstart + 1
             #now read from buffer
             if !is_digi
-                cur_samps = view(read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0), 1:nsamps_to_read); #takes almost all the time
-                cur_samps = map(pp, cur_samps);
-                output[:, curstart:curstop] = cur_samps;
+                read_analog!(sampbuf, tsk, Float64, nsamps_to_read, timeout=-1.0); #takes almost all the time
+                cur_samps = view(sampbuf, :, 1:nsamps_to_read);
+                output[:, curstart:curstop] .= pp.(cur_samps);
             else
-                output[:, curstart:curstop] = map(pp, read_digital!(sampbuf, tsk, UInt8, nsamps_to_read, timeout=-1.0))
+                output[:, curstart:curstop] .= pp.(read_digital!(sampbuf, tsk, UInt8, nsamps_to_read, timeout=-1.0))
             end
             print("So far $curstop of $nsamps samples have been read...\n")
             curstart = curstop + 1

@@ -18,8 +18,8 @@ function write_analog(t::NIDAQ.AOTask, data::Matrix{Float64}; timeout::Float64=-
         reinterpret(Bool32, UInt32(false)),
         timeout,
         reinterpret(Bool32,NIDAQ.Val_GroupByChannel),
-        pointer(data),
-        pointer(num_samples_per_chan_written),
+        Ref(data, 1),
+        Ref(num_samples_per_chan_written, 1),
         reinterpret(Ptr{Bool32},C_NULL)))
     if num_samples_per_chan_written[1] != num_samples_per_chan
         error("Wrote $num_samples_per_chan_written samples instead of the $num_samples_per_chan samples requested")
@@ -47,7 +47,7 @@ function prepare_ao(coms, bufsz::Int, trigger_terminal::String, clock_source)
     tsk = analog_output(DEVICE_PREFIX * chns[1])
     for i = 2:length(chns)
         analog_output(tsk, DEVICE_PREFIX * chns[i])
-        setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
+        NIDAQ.setproperty!(tsk, DEVICE_PREFIX * chns[i], "Max", 10.0) #"/ao0:1", "Max", 10.0)
     end
     if rig == "dummy-6002"
         #note: default Xfer size seems to be 8000 bytes (4000 samples)
@@ -61,15 +61,18 @@ function prepare_ao(coms, bufsz::Int, trigger_terminal::String, clock_source)
     end
     #creating clk_b this way works around a bizarre bug that prevents precompilatoin when converting clock_source with other methods
     clk_b = UInt8[]
-    if clock_source[1:2] == "ao"
-        clk_b = b"OnboardClock"
+    if isempty(clock_source)
+        clk_b = C_NULL
+    elseif clock_source[1:2] == "ao"
+        clk_b = convert(Ref{UInt8}, b"OnboardClock")
     else
         for ch in clock_source
             push!(clk_b, ch)
         end
+	clk_b = convert(Ref{UInt8}, clk_b)
     end
     NIDAQ.catch_error(NIDAQ.CfgSampClkTiming(tsk.th,
-            convert(Ref{UInt8}, clk_b),
+            clk_b,
             Float64(ustrip(samprate(first(coms)))),
             NIDAQ.Val_Rising,
             NIDAQ.Val_FiniteSamps,
@@ -80,16 +83,17 @@ function prepare_ao(coms, bufsz::Int, trigger_terminal::String, clock_source)
     NIDAQ.catch_error(NIDAQ.DAQmxCfgOutputBuffer(tsk.th, UInt32(bufsz)))
     if trigger_terminal != "disabled"
         print("    setting up digital start trigger for analog output...\n")
-        props = NIDAQ.getproperties(String(split(DEVICE_PREFIX, "/")[1]))
+	#(drop trailing "/" from device name)
+        props = NIDAQ.getproperties(String(split(DEVICE_PREFIX, "/")[1]))#; warning=false)
         terms = props["Terminals"][1]
         if !in("/" * DEVICE_PREFIX * trigger_terminal, terms)
             error("Terminal $trigger_terminal is does not exist.  Check valid terminals with NIDAQ.getproperties(dev)[\"Terminals\"]")
         end
-        #The below three commands should be equivalent to call ing CfgDigEdgeStartTrig
+        #The below three commands should be equivalent to calling CfgDigEdgeStartTrig
         #NIDAQ.catch_error(NIDAQ.SetStartTrigType(tsk.th, NIDAQ.Val_DigEdge))
         #NIDAQ.catch_error(NIDAQ.SetDigEdgeStartTrigSrc(tsk.th, "/" * DEVICE_PREFIX * trigger_terminal))
         #NIDAQ.catch_error(NIDAQ.SetDigEdgeStartTrigEdge(tsk.th, NIDAQ.Val_Rising))
-        NIDAQ.catch_error(NIDAQ.CfgDigEdgeStartTrig(tsk.th, convert(Ref{UInt8}, convert(Array{UInt8}, "/" * DEVICE_PREFIX * trigger_terminal)), NIDAQ.Val_Rising))
+        NIDAQ.catch_error(NIDAQ.CfgDigEdgeStartTrig(tsk.th, Ref(codeunits("/" * DEVICE_PREFIX * trigger_terminal),1), NIDAQ.Val_Rising))
     end
     return tsk
 end
@@ -143,8 +147,7 @@ function _output_analog_signals(coms::AbstractVector{T}, samps_per_write::Int, t
         rethrow()
     end
     print("Waiting for AO task to complete\n")
-    time_to_wait = 1.0*Unitful.s + 2*samps_per_write / samprate(coms[1])
-    NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, ustrip(time_to_wait)))
+    NIDAQ.catch_error(NIDAQ.WaitUntilTaskDone(tsk.th, -1.0))
     stop(tsk)
     clear(tsk)
     print("Finished.\n")
